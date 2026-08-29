@@ -13,8 +13,11 @@
 3. Каждому порту можно задать свой baudrate в списке PORTS ниже
    (по умолчанию 4800 бод — стандарт NMEA-0183).
 4. Интервал отправки задаётся константой SEND_INTERVAL (секунды, по умолчанию 0.3).
-5. Порты работают независимо: если один недоступен или произошла ошибка записи,
-   остальные продолжают отправку.
+5. Каналы работают независимо. Если какой-то канал недоступен (устройство
+   не подключено / нет драйвера), вместо него ставится заглушка Null:
+   данные «пишутся в пустоту» и отбрасываются. Скрипт не останавливается
+   и продолжает слать NMEA в реально доступные каналы. Автоподключения нет:
+   чтобы задействовать только что подключённое устройство, перезапустите скрипт.
 6. Для доступа к последовательным портам пользователь должен быть в группе dialout:
    `sudo usermod -aG dialout $USER` (после этого перелогиниться).
 7. Аппаратный UART3 (GPIO4/GPIO5) включается строкой `dtoverlay=uart3`
@@ -63,12 +66,36 @@ def generate_gprmc_sentence(lat, lat_dir, lon, lon_dir, speed, course):
     # Формируем итоговую строку с префиксом $, суффиксом *XX и окончанием \r\n
     return f"${content}*{hex(checksum)[2:].upper().zfill(2)}\r\n"
 
+class NullPort:
+    """Заглушка последовательного порта: принимает данные и отбрасывает их.
+
+    Подставляется вместо канала, когда устройство недоступно. Скрипт
+    продолжает работать и отправляет NMEA только в реально доступные
+    каналы; заглушка «пишет в пустоту» без ошибок.
+    """
+    is_null = True
+
+    def __init__(self, name):
+        self.name = name
+
+    def write(self, data):
+        # Данные «приняты», но выброшены в пустоту
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
 def sender_worker(ser, port_name, interval, stop_event):
     """Цикл отправки NMEA-сообщений в один уже открытый порт.
 
-    Запускается в отдельном потоке для каждого порта. Завершается
+    Запускается в отдельном потоке для каждого канала. Завершается
     по stop_event (Ctrl+C) либо при ошибке записи — при этом остальные
-    порты продолжают работать независимо.
+    каналы продолжают работать независимо. Для канала-заглушки Null
+    сообщения не выводятся в консоль.
     """
     while not stop_event.is_set():
         # Пример данных: 55°45.123' N, 037°37.567' E, 10.5 узлов, курс 180.0
@@ -82,60 +109,81 @@ def sender_worker(ser, port_name, interval, stop_event):
             print(f"[{port_name}] Ошибка записи, порт останавливается: {e}")
             break
 
-        print(f"[{port_name}] Отправлено: {packet.strip()}")
+        # Для заглушки Null не выводим «Отправлено» на каждый пакет
+        if not getattr(ser, "is_null", False):
+            print(f"[{port_name}] Отправлено: {packet.strip()}")
 
         # Ждём интервала, но мгновенно просыпаемся при остановке (Ctrl+C)
         stop_event.wait(interval)
 
 
+def try_open_port(cfg):
+    """Пытается открыть порт; возвращает serial-объект или None."""
+    port_name = cfg["port"]
+    baudrate = cfg.get("baudrate", 4800)
+    try:
+        # Открываем порт (стандарт NMEA-0183 — 4800 бод)
+        ser = serial.Serial(port_name, baudrate, timeout=1)
+    except (serial.SerialException, OSError) as e:
+        print(f"  [НЕДОСТУПЕН] {port_name} ({baudrate} бод): {e}")
+        return None
+    print(f"  [ОТКРЫТ]     {port_name} ({baudrate} бод)")
+    return ser
+
+
+def start_sender(ser, port_name, stop_event):
+    """Запускает поток отправки для уже открытого порта и возвращает его."""
+    t = threading.Thread(
+        target=sender_worker,
+        args=(ser, port_name, SEND_INTERVAL, stop_event),
+        name=f"sender-{port_name}",
+        daemon=True,
+    )
+    t.start()
+    return t
+
+
 def main():
     stop_event = threading.Event()
+    channels = []  # кортежи: (имя канала, объект порта, поток-отправитель)
 
     print("=" * 60)
     print("Открытие последовательных портов:")
 
-    workers = []  # пары (поток-отправитель, открытый порт)
+    # Открываем каждый канал из списка PORTS. Если устройство недоступно —
+    # вместо него ставим заглушку Null, чтобы скрипт продолжал работать.
     for cfg in PORTS:
-        port_name = cfg["port"]
-        baudrate = cfg.get("baudrate", 4800)
-        try:
-            # Открываем порт (стандарт NMEA-0183 — 4800 бод)
-            ser = serial.Serial(port_name, baudrate, timeout=1)
-        except (serial.SerialException, OSError) as e:
-            print(f"  [НЕДОСТУПЕН] {port_name} ({baudrate} бод): {e}")
-            continue
-        print(f"  [ОТКРЫТ]     {port_name} ({baudrate} бод)")
-        t = threading.Thread(
-            target=sender_worker,
-            args=(ser, port_name, SEND_INTERVAL, stop_event),
-            name=f"sender-{port_name}",
-            daemon=True,
-        )
-        workers.append((t, ser))
+        name = cfg["port"]
+        ser = try_open_port(cfg)
+        if ser is None:
+            ser = NullPort(name)
+            print(f"  [ЗАГЛУШКА]  {name} — устройства нет, пишу в Null")
+        channels.append((name, ser, start_sender(ser, name, stop_event)))
 
-    if not workers:
-        print("Ни один порт не открыт — отправлять некуда. Выход.")
-        return
-
+    real_ports = [n for n, s, _ in channels if not getattr(s, "is_null", False)]
+    print("=" * 60)
+    if real_ports:
+        print(f"NMEA отправляется в: {', '.join(real_ports)}")
+    else:
+        print("Ни один канал не доступен — все заменены заглушкой Null, отправки нет.")
     print(f"Интервал отправки: {SEND_INTERVAL} с. Остановка: Ctrl+C")
     print("=" * 60)
 
     try:
-        # Главный поток ждёт Ctrl+C, пока потоки шлют данные;
-        # если все порты упали сами — завершаемся тоже
-        while any(t.is_alive() for t, _ in workers):
+        # Ждём, пока все потоки живы (заглушки Null «работают» вечно),
+        # выходим по Ctrl+C. Сбой одного канала остальные не останавливает.
+        while any(t.is_alive() for _, _, t in channels):
             time.sleep(0.2)
     except KeyboardInterrupt:
         print("\nОстановлено пользователем.")
     finally:
         stop_event.set()  # сигнал всем потокам завершиться
-        for t, _ in workers:
+        for name, ser, t in channels:
             t.join(timeout=2)
-        for _, ser in workers:  # закрываем все открытые порты
             try:
                 ser.close()
             except Exception as e:
-                print(f"Ошибка при закрытии порта: {e}")
+                print(f"[{name}] Ошибка при закрытии порта: {e}")
         print("Все порты закрыты.")
 
 
