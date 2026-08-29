@@ -30,7 +30,7 @@
 import serial
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone , timedelta
 
 # ======================= Настройки =======================
 
@@ -48,7 +48,7 @@ PORTS = [
 
 def generate_gprmc_sentence(lat, lat_dir, lon, lon_dir, speed, course):
     """Генерирует строку GPRMC с правильной контрольной суммой."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) + timedelta(hours=5)  
     time_str = now.strftime("%H%M%S")
     date_str = now.strftime("%d%m%y")
     
