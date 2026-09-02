@@ -42,9 +42,9 @@ SEND_INTERVAL = 0.3
 
 # Список портов: у каждого свой baudrate (по умолчанию 4800)
 PORTS = [
-    {"port": "/dev/ttyUSB0", "baudrate": 4800},  # USB-адаптер 1
-    {"port": "/dev/ttyUSB1", "baudrate": 4800},  # USB-адаптер 2
-    {"port": "/dev/ttyAMA3", "baudrate": 4800},  # UART3 (GPIO4 TX / GPIO5 RX), пины 7/29
+    {"port": "/dev/ttyUSB0", "baudrate": 115200},  # USB-адаптер 1
+    {"port": "/dev/ttyUSB1", "baudrate": 115200},  # USB-адаптер 2
+    {"port": "/dev/ttyAMA3", "baudrate": 115200},  # UART3 (GPIO4 TX / GPIO5 RX), пины 7/29
 ]
 
 # =========================================================
