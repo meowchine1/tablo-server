@@ -113,18 +113,32 @@ CONFIG="/boot/firmware/config.txt"; [[ -f "$CONFIG" ]] || CONFIG="/boot/config.t
 
 if [[ ! -f "$CONFIG" ]]; then
     warn "Не найден config.txt ($CONFIG). Настройте UART3 вручную:"
-    warn "  Добавьте в config.txt строку:  dtoverlay=uart3"
+    warn "  Добавьте в config.txt строки:"
+    warn "    dtoverlay=uart3"
+    warn "    enable_uart=1"
 else
     info "Настройка UART3 (GPIO4 TX / GPIO5 RX -> /dev/ttyAMA2):"
 
-    # Активация UART3 через device tree overlay dtoverlay=uart3.
-    # Строка учитывает и варианты с параметрами: dtoverlay=uart3,ctsrts
+    # 4a. enable_uart=1 — флаг гарантирует работу UART-clock на Pi 4
+    #     (нужен для дополнительных PL011 uart2-uart5).
+    if grep -qE '^[[:space:]]*enable_uart[[:space:]]*=' "$CONFIG"; then
+        sudo sed -i 's/^[[:space:]]*enable_uart[[:space:]]*=.*/enable_uart=1/' "$CONFIG"
+        info "  enable_uart=1 уже есть в config.txt."
+    else
+        echo "enable_uart=1" | sudo tee -a "$CONFIG" > /dev/null
+        info "  enable_uart=1 добавлено в $CONFIG"
+    fi
+
+    # 4b. Сам UART3: dtoverlay=uart3. Строка учитывает и варианты
+    #     с параметрами: dtoverlay=uart3,ctsrts
     if grep -qE '^[[:space:]]*dtoverlay[[:space:]]*=[[:space:]]*uart3([, ]|$)' "$CONFIG"; then
         info "  dtoverlay=uart3 уже есть в config.txt."
     else
         echo "dtoverlay=uart3" | sudo tee -a "$CONFIG" > /dev/null
         info "  dtoverlay=uart3 добавлено в $CONFIG"
     fi
+
+    info "  ВАЖНО: изменения UART вступят в силу только после перезагрузки."
 fi
 
 # -----------------------------------------------------------------------------
@@ -136,13 +150,16 @@ echo " ИТОГ:"
 echo "  • python3 / pip / git   — установлены"
 echo "  • pyserial, ntplib      — установлены"
 echo "  • группа dialout        — $USER (применится после перезагрузки)"
-echo "  • UART3 (/dev/ttyAMA2) — включён (GPIO4 TX / GPIO5 RX)"
+echo "  • UART3 (/dev/ttyAMA2) — включён (GPIO4 TX / GPIO5 RX), после ребута активируется"
 echo
 echo " ДАЛЬШЕ:"
 echo "  1) Перезагрузитесь:        sudo reboot"
 echo "  2) Скопируйте скрипты проекта на Pi, например с компьютера:"
 echo "       scp generate_send_nmea_gprmc.py ntp.py $USER@<ip-pi>:~/"
-echo "  3) Проверьте порты:        ls -l /dev/ttyAMA2 /dev/ttyUSB0 /dev/ttyUSB1"
+echo "  3) Проверьте порты:        ls -l /dev/ttyAMA* /dev/ttyUSB0 /dev/ttyUSB1"
+echo "     UART3 обычно даёт /dev/ttyAMA2, но номер может сдвинуться —"
+echo "     возьмите тот ttyAMA*, что появился после включения, и пропишите"
+echo "     его в PORTS в generate_send_nmea_gprmc.py при необходимости."
 echo "     Подключение UART3: TX устройства -> GPIO5 (RX), RX устройства -> GPIO4 (TX)"
 echo "  4) Запустите проект:       python3 ~/generate_send_nmea_gprmc.py"
 echo "     (если будет 'Permission denied' — перелогиньтесь, чтобы dialout применилась)"

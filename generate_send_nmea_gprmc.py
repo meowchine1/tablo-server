@@ -3,13 +3,13 @@
 
 0. Сначала выполните разовую инициализацию:
    `bash setup_raspberry_pi.sh` — скрипт поставит пакеты и зависимости,
-   добавит пользователя в группу dialout и включит UART3 (/dev/ttyAMA2).
+   добавит пользователя в группу dialout и включит UART3 (/dev/ttyAMA3).
 1. Установить библиотеку serial: `pip install pyserial`
    (или `sudo apt install python3-serial`)
 2. Скрипт одновременно отправляет одно и то же NMEA-сообщение в три порта:
    - /dev/ttyUSB0  — USB-адаптер 1
    - /dev/ttyUSB1  — USB-адаптер 2
-   - /dev/ttyAMA2  — UART3 Raspberry Pi (GPIO4 TX / GPIO5 RX)
+   - /dev/ttyAMA3  — UART3 Raspberry Pi (GPIO4 TX / GPIO5 RX)
 3. Каждому порту можно задать свой baudrate в списке PORTS ниже
    (по умолчанию 4800 бод — стандарт NMEA-0183).
 4. Интервал отправки задаётся константой SEND_INTERVAL (секунды, по умолчанию 0.3).
@@ -22,7 +22,10 @@
    `sudo usermod -aG dialout $USER` (после этого перелогиниться).
 7. Аппаратный UART3 (GPIO4/GPIO5) включается строкой `dtoverlay=uart3`
    в config.txt — скрипт инициализации делает это автоматически.
-   GPIO4 = TX, GPIO5 = RX (пины 7 и 29 на разъёме 40-pin).
+   GPIO4 = TX (TXD3), GPIO5 = RX (RXD3) — пины 7 и 29 на разъёме 40-pin.
+   После включения нужна ПЕРЕЗАГРУЗКА; проверьте имя устройства:
+   `ls -l /dev/ttyAMA*`. Обычно это /dev/ttyAMA3, но номер может сдвинуться
+   (если /dev/ttyAMA3 отсутствует — см. пункт 5, скрипт продолжит работу).
 
 Запуск: `python3 generate_send_nmea_gprmc.py` (остановка — Ctrl+C)
 """
@@ -30,7 +33,7 @@
 import serial
 import threading
 import time
-from datetime import datetime, timezone , timedelta
+from datetime import datetime, timezone, timedelta
 
 # ======================= Настройки =======================
 
@@ -41,7 +44,7 @@ SEND_INTERVAL = 0.3
 PORTS = [
     {"port": "/dev/ttyUSB0", "baudrate": 4800},  # USB-адаптер 1
     {"port": "/dev/ttyUSB1", "baudrate": 4800},  # USB-адаптер 2
-    {"port": "/dev/ttyAMA2", "baudrate": 4800},  # UART3 Raspberry Pi (GPIO4 TX / GPIO5 RX)
+    {"port": "/dev/ttyAMA3", "baudrate": 4800},  # UART3 (GPIO4 TX / GPIO5 RX), пины 7/29
 ]
 
 # =========================================================
