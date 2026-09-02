@@ -11,7 +11,6 @@
    - /dev/ttyUSB1  — USB-адаптер 2
    - /dev/ttyAMA3  — UART3 Raspberry Pi (GPIO4 TX / GPIO5 RX)
 3. Каждому порту можно задать свой baudrate в списке PORTS ниже
-   (по умолчанию 4800 бод — стандарт NMEA-0183).
 4. Интервал отправки задаётся константой SEND_INTERVAL (секунды, по умолчанию 0.3).
 5. Каналы работают независимо. Если какой-то канал недоступен (устройство
    не подключено / нет драйвера), вместо него ставится заглушка Null:
@@ -42,9 +41,9 @@ SEND_INTERVAL = 0.3
 
 # Список портов: у каждого свой baudrate (по умолчанию 4800)
 PORTS = [
-    {"port": "/dev/ttyUSB0", "baudrate": 115200},  # USB-адаптер 1
-    {"port": "/dev/ttyUSB1", "baudrate": 115200},  # USB-адаптер 2
-    {"port": "/dev/ttyAMA3", "baudrate": 115200},  # UART3 (GPIO4 TX / GPIO5 RX), пины 7/29
+    {"port": "/dev/ttyUSB0", "baudrate": 4800},  # USB-адаптер 1
+    {"port": "/dev/ttyUSB1", "baudrate": 4800},  # USB-адаптер 2
+    {"port": "/dev/ttyAMA3", "baudrate": 4800},  # UART3 (GPIO4 TX / GPIO5 RX), пины 7/29
 ]
 
 # =========================================================
