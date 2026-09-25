@@ -12,11 +12,13 @@
    - /dev/ttyAMA3  — UART3 Raspberry Pi (GPIO4 TX / GPIO5 RX)
 3. Каждому порту можно задать свой baudrate в списке PORTS ниже
 4. Интервал отправки задаётся константой SEND_INTERVAL (секунды, по умолчанию 0.3).
-5. Каналы работают независимо. Если какой-то канал недоступен (устройство
-   не подключено / нет драйвера), вместо него ставится заглушка Null:
-   данные «пишутся в пустоту» и отбрасываются. Скрипт не останавливается
-   и продолжает слать NMEA в реально доступные каналы. Автоподключения нет:
-   чтобы задействовать только что подключённое устройство, перезапустите скрипт.
+5. Каналы работают независимо, отправка не прерывается. Если канал недоступен
+   (устройство не подключено / нет драйвера), вместо него ставится заглушка
+   Null: данные «пишутся в пустоту» и отбрасываются, остальные каналы при этом
+   продолжают работать. Состояние портов периодически перепроверяется
+   (PORT_CHECK_INTERVAL, по умолчанию 5 с): как только устройство появится,
+   отправка автоматически пойдёт в порт вместо заглушки; если порт отвалился,
+   канал снова уходит в заглушку и продолжает работать, не останавливая скрипт.
 6. Для доступа к последовательным портам пользователь должен быть в группе dialout:
    `sudo usermod -aG dialout $USER` (после этого перелогиниться).
 7. Аппаратный UART3 (GPIO4/GPIO5) включается строкой `dtoverlay=uart3`
@@ -29,6 +31,7 @@
 Запуск: `python3 generate_send_nmea_gprmc.py` (остановка — Ctrl+C)
 """
 
+import os
 import serial
 import threading
 import time
@@ -38,6 +41,9 @@ from datetime import datetime, timezone, timedelta
 
 # Интервал отправки NMEA-сообщений, секунд
 SEND_INTERVAL = 0.3
+
+# Периодичность проверки состояния портов, секунд (заглушка -> порт, порт -> заглушка)
+PORT_CHECK_INTERVAL = 5.0
 
 # Список портов: у каждого свой baudrate (по умолчанию 4800)
 PORTS = [
@@ -91,53 +97,118 @@ class NullPort:
         pass
 
 
-def sender_worker(ser, port_name, interval, stop_event):
-    """Цикл отправки NMEA-сообщений в один уже открытый порт.
+def sender_worker(cfg, ser, stop_event):
+    """Непрерывный цикл отправки NMEA-сообщений в один канал.
 
-    Запускается в отдельном потоке для каждого канала. Завершается
-    по stop_event (Ctrl+C) либо при ошибке записи — при этом остальные
-    каналы продолжают работать независимо. Для канала-заглушки Null
-    сообщения не выводятся в консоль.
+    Запускается в отдельном потоке для каждого порта. Отправка не
+    прерывается из-за проблем с портом: при ошибке записи канал переходит
+    на заглушку Null, а раз в PORT_CHECK_INTERVAL секунд состояние порта
+    проверяется заново (refresh_port). Как только порт снова доступен,
+    отправка автоматически идёт в него, а не в заглушку. Поток завершается
+    только по stop_event (Ctrl+C), закрывая свой порт. Для канала-заглушки
+    Null сообщения «Отправлено» в консоль не выводятся.
     """
-    while not stop_event.is_set():
-        # Пример данных: 55°45.123' N, 037°37.567' E, 10.5 узлов, курс 180.0
-        packet = generate_gprmc_sentence("5545.1234", "N", "03737.5678", "E", "10.5", "180.0")
+    port_name = cfg["port"]
+    baudrate = cfg.get("baudrate", 4800)
+    next_check = time.monotonic() + PORT_CHECK_INTERVAL
 
-        try:
-            # Отправка байтов в порт
-            ser.write(packet.encode('ascii'))
-            ser.flush()
-        except (serial.SerialException, OSError) as e:
-            print(f"[{port_name}] Ошибка записи, порт останавливается: {e}")
-            break
+    try:
+        while not stop_event.is_set():
+            # Периодическая проверка состояния порта (по умолчанию раз в 5 с):
+            # заглушка Null -> реальный порт, отвалившийся порт -> заглушка
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + PORT_CHECK_INTERVAL
+                ser = refresh_port(ser, port_name, baudrate)
 
-        # Для заглушки Null не выводим «Отправлено» на каждый пакет
-        if not getattr(ser, "is_null", False):
-            print(f"[{port_name}] Отправлено: {packet.strip()}")
+            # Пример данных: 55°45.123' N, 037°37.567' E, 10.5 узлов, курс 180.0
+            packet = generate_gprmc_sentence("5545.1234", "N", "03737.5678", "E", "10.5", "180.0")
 
-        # Ждём интервала, но мгновенно просыпаемся при остановке (Ctrl+C)
-        stop_event.wait(interval)
+            try:
+                # Отправка байтов в порт
+                ser.write(packet.encode('ascii'))
+                ser.flush()
+            except (serial.SerialException, OSError) as e:
+                # Порт «отвалился»: канал не останавливаем, а уходим в заглушку
+                print(f"[{port_name}] Ошибка записи: {e}. Канал переходит в заглушку Null.")
+                ser = to_null_port(ser, port_name)
+
+            # Для заглушки Null не выводим «Отправлено» на каждый пакет
+            if not getattr(ser, "is_null", False):
+                print(f"[{port_name}] Отправлено: {packet.strip()}")
+
+            # Ждём интервала, но мгновенно просыпаемся при остановке (Ctrl+C)
+            stop_event.wait(SEND_INTERVAL)
+    finally:
+        # Порт закрывает сам канал (заглушке Null закрытие не нужно)
+        close_port(ser, port_name)
 
 
-def try_open_port(cfg):
-    """Пытается открыть порт; возвращает serial-объект или None."""
+def try_open_port(cfg, announce=True):
+    """Пытается открыть порт; возвращает serial-объект или None.
+
+    announce=False — не выводить результат (используется при фоновой
+    периодической проверке, чтобы не засорять консоль).
+    """
     port_name = cfg["port"]
     baudrate = cfg.get("baudrate", 4800)
     try:
         # Открываем порт (стандарт NMEA-0183 — 4800 бод)
         ser = serial.Serial(port_name, baudrate, timeout=1)
     except (serial.SerialException, OSError) as e:
-        print(f"  [НЕДОСТУПЕН] {port_name} ({baudrate} бод): {e}")
+        if announce:
+            print(f"  [НЕДОСТУПЕН] {port_name} ({baudrate} бод): {e}")
         return None
-    print(f"  [ОТКРЫТ]     {port_name} ({baudrate} бод)")
+    if announce:
+        print(f"  [ОТКРЫТ]     {port_name} ({baudrate} бод)")
     return ser
 
 
-def start_sender(ser, port_name, stop_event):
-    """Запускает поток отправки для уже открытого порта и возвращает его."""
+def close_port(ser, port_name):
+    """Закрывает реальный порт (заглушке Null закрытие не нужно)."""
+    if getattr(ser, "is_null", False):
+        return
+    try:
+        ser.close()
+    except Exception as e:
+        print(f"[{port_name}] Ошибка при закрытии порта: {e}")
+
+
+def to_null_port(ser, port_name):
+    """Закрывает нерабочий порт и возвращает вместо него заглушку Null."""
+    close_port(ser, port_name)
+    return NullPort(port_name)
+
+
+def refresh_port(ser, port_name, baudrate):
+    """Проверяет состояние канала и возвращает актуальный объект порта.
+
+    Вызывается раз в PORT_CHECK_INTERVAL секунд:
+      • канал работал через заглушку Null — пробуем открыть порт снова;
+        как только устройство доступно, отправка пойдёт в порт, а не в Null;
+      • порт реальный, но устройство пропало (например, выдернули
+        USB-адаптер) — канал переходит в заглушку Null и продолжает работу.
+    """
+    if getattr(ser, "is_null", False):
+        new_ser = try_open_port({"port": port_name, "baudrate": baudrate}, announce=False)
+        if new_ser is None:
+            return ser  # порт всё ещё недоступен — продолжаем писать в заглушку
+        print(f"[{port_name}] Порт стал доступен — отправка идёт в порт вместо заглушки.")
+        return new_ser
+
+    # Порт реальный: проверяем, что устройство на месте
+    if not os.path.exists(port_name):
+        print(f"[{port_name}] Устройство пропало — канал переходит в заглушку Null.")
+        return to_null_port(ser, port_name)
+
+    return ser
+
+
+def start_sender(cfg, ser, stop_event):
+    """Запускает поток отправки для канала и возвращает его."""
+    port_name = cfg["port"]
     t = threading.Thread(
         target=sender_worker,
-        args=(ser, port_name, SEND_INTERVAL, stop_event),
+        args=(cfg, ser, stop_event),
         name=f"sender-{port_name}",
         daemon=True,
     )
@@ -147,45 +218,47 @@ def start_sender(ser, port_name, stop_event):
 
 def main():
     stop_event = threading.Event()
-    channels = []  # кортежи: (имя канала, объект порта, поток-отправитель)
+    channels = []  # кортежи: (имя канала, поток-отправитель)
+    real_ports = []  # каналы, открытые реально (не заглушки)
 
     print("=" * 60)
     print("Открытие последовательных портов:")
 
     # Открываем каждый канал из списка PORTS. Если устройство недоступно —
-    # вместо него ставим заглушку Null, чтобы скрипт продолжал работать.
+    # вместо него ставим заглушку Null: канал всё равно работает, а состояние
+    # порта перепроверяется раз в PORT_CHECK_INTERVAL секунд, и как только
+    # устройство появится, отправка автоматически пойдёт в него.
     for cfg in PORTS:
         name = cfg["port"]
         ser = try_open_port(cfg)
         if ser is None:
             ser = NullPort(name)
             print(f"  [ЗАГЛУШКА]  {name} — устройства нет, пишу в Null")
-        channels.append((name, ser, start_sender(ser, name, stop_event)))
+        else:
+            real_ports.append(name)
+        channels.append((name, start_sender(cfg, ser, stop_event)))
 
-    real_ports = [n for n, s, _ in channels if not getattr(s, "is_null", False)]
     print("=" * 60)
     if real_ports:
         print(f"NMEA отправляется в: {', '.join(real_ports)}")
     else:
-        print("Ни один канал не доступен — все заменены заглушкой Null, отправки нет.")
-    print(f"Интервал отправки: {SEND_INTERVAL} с. Остановка: Ctrl+C")
+        print("Ни один канал не доступен — пока все каналы работают через заглушку Null.")
+        print("Скрипт продолжает работу: как только порт появится, отправка пойдёт в него.")
+    print(f"Интервал отправки: {SEND_INTERVAL} с. Проверка портов: каждые {PORT_CHECK_INTERVAL} с.")
+    print("Остановка: Ctrl+C")
     print("=" * 60)
 
     try:
-        # Ждём, пока все потоки живы (заглушки Null «работают» вечно),
+        # Потоки каналов работают постоянно (заглушки Null «работают» вечно),
         # выходим по Ctrl+C. Сбой одного канала остальные не останавливает.
-        while any(t.is_alive() for _, _, t in channels):
+        while any(t.is_alive() for _, t in channels):
             time.sleep(0.2)
     except KeyboardInterrupt:
         print("\nОстановлено пользователем.")
     finally:
         stop_event.set()  # сигнал всем потокам завершиться
-        for name, ser, t in channels:
-            t.join(timeout=2)
-            try:
-                ser.close()
-            except Exception as e:
-                print(f"[{name}] Ошибка при закрытии порта: {e}")
+        for _, t in channels:
+            t.join(timeout=2)  # порты закрывает сам поток канала
         print("Все порты закрыты.")
 
 
