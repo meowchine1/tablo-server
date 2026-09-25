@@ -32,7 +32,6 @@ echo "[3/6] Creating systemd service..."
 sudo tee /etc/systemd/system/shutdown-button.service > /dev/null <<'SERVICE'
 [Unit]
 Description=Raspberry Pi Shutdown Button
-After=multi-user.target
 
 [Service]
 Type=simple

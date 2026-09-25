@@ -3,6 +3,8 @@
 sudo tee /etc/systemd/system/tablo-server.service > /dev/null <<EOF
 [Unit]
 Description=Tablo NMEA Generator
+After=dev-ttyAMA3.device
+Requires=dev-ttyAMA3.device
 
 [Service]
 Type=simple
