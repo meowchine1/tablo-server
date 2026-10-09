@@ -12,16 +12,16 @@
 #         - pyserial (serial) — работа с последовательными портами / NMEA
 #         - ntplib            — для ntp.py (точное время через NTP)
 #    3. Добавляет текущего пользователя в группу dialout —
-#       даёт право открывать /dev/ttyUSB0, /dev/ttyUSB1, /dev/ttyAMA2.
+#       даёт право открывать /dev/ttyUSB0, /dev/ttyUSB1, /dev/ttyAMA3.
 #    4. Включает аппаратный UART3 (GPIO4 TX / GPIO5 RX) через dtoverlay=uart3 —
-#       устройство /dev/ttyAMA2 используется для отправки NMEA-сообщений.
+#       устройство /dev/ttyAMA3 используется для отправки NMEA-сообщений.
 #    5. Выводит итоговую сводку и предлагает перезагрузку.
 #
 #  Запуск на Raspberry Pi:
 #      bash setup_raspberry_pi.sh
 #
 #  После перезагрузки проверьте:
-#      ls -l /dev/ttyAMA2 /dev/ttyUSB0 /dev/ttyUSB1
+#      ls -l /dev/ttyAMA3 /dev/ttyUSB0 /dev/ttyUSB1
 #      id -nG            # в списке должна быть группа dialout
 #      python3 -c "import serial, ntplib; print('ok')"
 # ============================================================================
@@ -157,7 +157,7 @@ echo "  1) Перезагрузитесь:        sudo reboot"
 echo "  2) Скопируйте скрипты проекта на Pi, например с компьютера:"
 echo "       scp generate_send_nmea_gprmc.py ntp.py $USER@<ip-pi>:~/"
 echo "  3) Проверьте порты:        ls -l /dev/ttyAMA* /dev/ttyUSB0 /dev/ttyUSB1"
-echo "     UART3 обычно даёт /dev/ttyAMA2, но номер может сдвинуться —"
+echo "     UART3 обычно даёт /dev/ttyAMA3, но номер может сдвинуться —"
 echo "     возьмите тот ttyAMA*, что появился после включения, и пропишите"
 echo "     его в PORTS в generate_send_nmea_gprmc.py при необходимости."
 echo "     Подключение UART3: TX устройства -> GPIO5 (RX), RX устройства -> GPIO4 (TX)"
